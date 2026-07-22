@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/services/core_services/visualization_service.dart';
+
 class PieChartMatplotlibOptionsOverlay extends StatefulWidget {
   final Map<String, dynamic>? initialOptions;
   final Function(Map<String, dynamic> options) onOptionsChanged;
+  final String? datasetPath;
 
   const PieChartMatplotlibOptionsOverlay({
     super.key,
     this.initialOptions,
     required this.onOptionsChanged,
+    this.datasetPath,
   });
 
   @override
@@ -23,6 +27,8 @@ class _PieChartMatplotlibOptionsOverlayState
   // Column selection
   String? _selectedCategoryColumn;
   String? _selectedValueColumn;
+  List<String> _availableColumns = [];
+  bool _isLoadingColumns = true;
 
   // Filter settings
   bool _enableFiltering = false;
@@ -55,31 +61,46 @@ class _PieChartMatplotlibOptionsOverlayState
   double _outputDpi = 300;
   bool _transparentBackground = false;
 
-  // Mock data for dropdowns
-  final List<String> _mockColumns = [
-    'name',
-    'category',
-    'revenue',
-    'sales',
-    'profit',
-    'region',
-  ];
-
   @override
   void initState() {
     super.initState();
     _titleController = TextEditingController(text: 'Pie Chart');
     _subtitleController = TextEditingController(text: '');
 
-    // Set default columns
-    _selectedCategoryColumn =
-        _mockColumns.isNotEmpty ? _mockColumns.first : null;
-    _selectedValueColumn =
-        _mockColumns.length > 1 ? _mockColumns[1] : _selectedCategoryColumn;
-
     // Initialize with provided options if available
     if (widget.initialOptions != null) {
       _loadInitialOptions();
+    }
+
+    _loadColumns();
+  }
+
+  Future<void> _loadColumns() async {
+    if (widget.datasetPath == null || widget.datasetPath!.isEmpty) {
+      setState(() => _isLoadingColumns = false);
+      return;
+    }
+
+    try {
+      final visualizationService = VisualizationService();
+      final columnSamples = await visualizationService.getDatasetColumns(
+        widget.datasetPath!,
+      );
+      setState(() {
+        _availableColumns = columnSamples.keys.toList();
+        if (_selectedCategoryColumn == null && _availableColumns.isNotEmpty) {
+          _selectedCategoryColumn = _availableColumns.first;
+        }
+        if (_selectedValueColumn == null && _availableColumns.length > 1) {
+          _selectedValueColumn = _availableColumns[1];
+        } else if (_selectedValueColumn == null && _availableColumns.isNotEmpty) {
+          _selectedValueColumn = _availableColumns.first;
+        }
+        _isLoadingColumns = false;
+      });
+    } catch (e) {
+      setState(() => _isLoadingColumns = false);
+      debugPrint('Error loading columns: $e');
     }
   }
 
@@ -186,7 +207,9 @@ class _PieChartMatplotlibOptionsOverlayState
           ),
         ],
       ),
-      body: ListView(
+      body: _isLoadingColumns
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
           // 1. Column Selection
@@ -266,7 +289,7 @@ class _PieChartMatplotlibOptionsOverlayState
             _buildDropdown(
               label: 'Category Column',
               value: _selectedCategoryColumn,
-              items: _mockColumns,
+              items: _availableColumns,
               onChanged: (value) {
                 setState(() {
                   _selectedCategoryColumn = value;
@@ -277,7 +300,7 @@ class _PieChartMatplotlibOptionsOverlayState
             _buildDropdown(
               label: 'Value Column',
               value: _selectedValueColumn,
-              items: _mockColumns,
+              items: _availableColumns,
               onChanged: (value) {
                 setState(() {
                   _selectedValueColumn = value;
@@ -672,6 +695,11 @@ class _PieChartMatplotlibOptionsOverlayState
     List<String>? itemLabels,
     required Function(String) onChanged,
   }) {
+    // Guard: ensure value exists in items to avoid DropdownButton assertion error
+    final safeValue = (value != null && items.contains(value))
+        ? value
+        : (items.isNotEmpty ? items.first : null);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -686,7 +714,7 @@ class _PieChartMatplotlibOptionsOverlayState
           ),
           child: DropdownButtonHideUnderline(
             child: DropdownButton<String>(
-              value: value,
+              value: safeValue,
               isExpanded: true,
               items: List.generate(
                 items.length,

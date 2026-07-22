@@ -1,9 +1,9 @@
-import 'dart:io';
 
 import 'package:fl_chart/fl_chart.dart';
-import 'package:csv/csv.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+
+import '../../../../core/services/caching_services/csv_data_cache.dart';
 
 class DynamicLineChart extends StatefulWidget {
   final String filePath;
@@ -17,13 +17,6 @@ class DynamicLineChart extends StatefulWidget {
     this.preProcessedData,
   });
 
-  // Update the chart with new options
-  void updateOptions(Map<String, dynamic> newOptions) {
-    if (_DynamicLineChartState._instance != null) {
-      _DynamicLineChartState._instance!._updateOptions(newOptions);
-    }
-  }
-
   @override
   State<DynamicLineChart> createState() => _DynamicLineChartState();
 }
@@ -34,14 +27,20 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
   String? _selectedXColumn;
   String? _selectedYColumn;
   bool _isLoading = true;
-  static _DynamicLineChartState? _instance;
 
-  List<FlSpot> _spots = [];
+  // Cached computed chart data — recomputed only when columns or data change
+  List<FlSpot> _cachedSpots = [];
+  double _cachedMinX = 0;
+  double _cachedMaxX = 0;
+  double _cachedMinY = 0;
+  double _cachedMaxY = 0;
+
+  /// Maximum points to render before downsampling kicks in.
+  static const int _downsampleThreshold = 500;
 
   @override
   void initState() {
     super.initState();
-    _instance = this;
     if (widget.preProcessedData != null) {
       _processPreProcessedData();
     } else {
@@ -50,126 +49,66 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
   }
 
   @override
-  void dispose() {
-    if (_instance == this) {
-      _instance = null;
+  void didUpdateWidget(covariant DynamicLineChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    // If dataset changed, reload
+    if (oldWidget.filePath != widget.filePath) {
+      _loadCsvData();
+      return;
     }
-    super.dispose();
-  }
 
-  // Method to update chart options
-  void _updateOptions(Map<String, dynamic> newOptions) {
-    if (mounted) {
-      setState(() {
-        widget.chartOptions.addAll(newOptions);
-        // _buildLineChart();
-      });
+    // If column selections changed in options, recompute spots
+    final oldX = oldWidget.chartOptions['selectedXColumn'];
+    final oldY = oldWidget.chartOptions['selectedYColumn'];
+    final newX = widget.chartOptions['selectedXColumn'];
+    final newY = widget.chartOptions['selectedYColumn'];
+    if (oldX != newX || oldY != newY) {
+      _selectedXColumn = newX ?? _selectedXColumn;
+      _selectedYColumn = newY ?? _selectedYColumn;
+      _recomputeSpots();
     }
+
+    // Visual-only option changes don't need recomputation — just rebuild the widget tree
   }
-
-  // // Method to parse date values
-  // double? parseXValue(dynamic value) {
-  //   if (value is num) {
-  //     return value.toDouble();
-  //   } else if (value is String) {
-  //     // Try parsing different date/time formats
-  //     try {
-  //       final date = DateTime.parse(value);
-  //       return date.millisecondsSinceEpoch.toDouble();
-  //     } catch (e) {
-  //       // If not a date, try parsing as number
-  //       return double.tryParse(value);
-  //     }
-  //   }
-  //   return null;
-  // }
-
-  double? parseTimeValue(dynamic value) {
-  if (value is num) {
-    return value.toDouble();
-  } else if (value is String) {
-    try {
-      // Try parsing different date/time formats
-      DateTime? date;
-      
-      // Try ISO format with time
-      try {
-        date = DateTime.parse(value);
-      } catch (_) {
-        // Try custom format
-        date = DateFormat('yyyy-MM-dd HH:mm:ss').parse(value);
-      }
-      
-      if (date != null) {
-        return date.millisecondsSinceEpoch.toDouble();
-      }
-    } catch (e) {
-      // If not a date/time, try as number
-      return double.tryParse(value);
-    }
-  }
-  return null;
-}
-
-  // double? parseYValue(dynamic value) {
-  //   if (value is num) {
-  //     return value.toDouble();
-  //   } else if (value is String) {
-  //     // Try parsing as date first
-  //     try {
-  //       final date = DateTime.parse(value);
-  //       return date.millisecondsSinceEpoch.toDouble();
-  //     } catch (e) {
-  //       // If not a date, try parsing as number
-  //       return double.tryParse(value);
-  //     }
-  //   }
-  //   return null;
-  // }
 
   void _processPreProcessedData() {
+    final spots = widget.preProcessedData!
+        .map(
+          (row) => FlSpot(
+            (row['x'] as num).toDouble(),
+            (row['y'] as num).toDouble(),
+          ),
+        )
+        .toList();
+
     setState(() {
       _isLoading = false;
-      _spots =
-          widget.preProcessedData!
-              .map(
-                (row) => FlSpot(
-                  (row['x'] as num).toDouble(),
-                  (row['y'] as num).toDouble(),
-                ),
-              )
-              .toList();
       _headers = null;
       _data = null;
+      _cachedSpots = spots;
+      _computeBounds(_cachedSpots);
     });
   }
 
   Future<void> _loadCsvData() async {
     try {
-      final file = File(widget.filePath);
-      if (!await file.exists()) {
-        throw Exception("CSV File does not exist: ${widget.filePath}");
-      }
-      final content = await file.readAsString();
-      final csvTable = const CsvToListConverter(
-        fieldDelimiter: ',',
-        eol: '\n',
-        shouldParseNumbers: true,
-      ).convert(content);
+      final csvData = await CsvDataCache().getCsvData(widget.filePath);
 
-      if (csvTable.isEmpty) throw Exception("CSV File has no data");
-
-      if (!mounted) return; // Try
+      if (!mounted) return;
 
       setState(() {
-        _headers = csvTable[0].map((e) => e.toString()).toList();
-        _data = csvTable.length > 1 ? csvTable.sublist(1) : [];
-        _selectedXColumn = _headers!.first;
-        _selectedYColumn = _findNumericColumn();
+        _headers = csvData.headers;
+        _data = csvData.rows;
+        _selectedXColumn = widget.chartOptions['selectedXColumn'] ?? _headers!.first;
+        _selectedYColumn = widget.chartOptions['selectedYColumn'] ??
+            CsvDataCache.findNumericColumn(_headers!, _data!);
         _isLoading = false;
       });
+
+      _recomputeSpots();
     } catch (error) {
-      if (!mounted) return; // Try
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
         _data = null;
@@ -178,26 +117,150 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
     }
   }
 
-  String? _findNumericColumn() {
-    if (_headers == null ||
-        _headers!.isEmpty ||
-        _data == null ||
-        _data!.isEmpty) {
-      return null;
+  /// Recompute the FlSpot list from raw data. Called only when columns or data change.
+  void _recomputeSpots() {
+    if (_data == null ||
+        _headers == null ||
+        _selectedXColumn == null ||
+        _selectedYColumn == null) {
+      return;
     }
-    for (var header in _headers!) {
-      final headerIndex = _headers!.indexOf(header);
-      for (var row in _data!) {
-        if (row.length > headerIndex) {
-          final value = row[headerIndex];
-          if (value is num ||
-              (value != null && double.tryParse(value.toString()) != null)) {
-            return header;
-          }
-        }
+
+    final xIndex = _headers!.indexOf(_selectedXColumn!);
+    final yIndex = _headers!.indexOf(_selectedYColumn!);
+
+    if (xIndex < 0 || yIndex < 0) {
+      setState(() => _cachedSpots = []);
+      return;
+    }
+
+    List<FlSpot> spots = [];
+    for (var row in _data!) {
+      if (row.length <= xIndex || row.length <= yIndex) continue;
+      final xRaw = row[xIndex];
+      final yRaw = row[yIndex];
+
+      double? x = _parseTimeValue(xRaw);
+      double? y = _parseTimeValue(yRaw);
+
+      if (x != null && y != null) {
+        spots.add(FlSpot(x, y));
       }
     }
-    return _headers!.first;
+    spots.sort((a, b) => a.x.compareTo(b.x));
+
+    // Downsample if needed
+    if (spots.length > _downsampleThreshold) {
+      spots = _lttbDownsample(spots, _downsampleThreshold);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _cachedSpots = spots;
+      _computeBounds(_cachedSpots);
+    });
+  }
+
+  /// Compute axis bounds from spots, with 10% padding.
+  void _computeBounds(List<FlSpot> spots) {
+    if (spots.isEmpty) {
+      _cachedMinX = 0;
+      _cachedMaxX = 0;
+      _cachedMinY = 0;
+      _cachedMaxY = 0;
+      return;
+    }
+
+    double minX = spots.first.x, maxX = spots.first.x;
+    double minY = spots.first.y, maxY = spots.first.y;
+
+    for (final s in spots) {
+      if (s.x < minX) minX = s.x;
+      if (s.x > maxX) maxX = s.x;
+      if (s.y < minY) minY = s.y;
+      if (s.y > maxY) maxY = s.y;
+    }
+
+    final xPad = (maxX - minX) * 0.1;
+    final yPad = (maxY - minY) * 0.1;
+
+    _cachedMinX = minX - xPad;
+    _cachedMaxX = maxX + xPad;
+    _cachedMinY = minY - yPad;
+    _cachedMaxY = maxY + yPad;
+  }
+
+  /// Largest-Triangle-Three-Buckets downsampling algorithm.
+  /// Preserves the visual shape of the line while reducing point count.
+  static List<FlSpot> _lttbDownsample(List<FlSpot> data, int targetCount) {
+    if (data.length <= targetCount) return data;
+
+    final sampled = <FlSpot>[data.first];
+    final bucketSize = (data.length - 2) / (targetCount - 2);
+
+    int a = 0; // index of previously selected point
+
+    for (int i = 0; i < targetCount - 2; i++) {
+      // Calculate the average point for the next bucket
+      final avgRangeStart = ((i + 1) * bucketSize).floor() + 1;
+      final avgRangeEnd = ((i + 2) * bucketSize).floor() + 1;
+      final avgRangeEndClamped = avgRangeEnd < data.length ? avgRangeEnd : data.length;
+
+      double avgX = 0, avgY = 0;
+      int count = avgRangeEndClamped - avgRangeStart;
+      if (count <= 0) count = 1;
+
+      for (int j = avgRangeStart; j < avgRangeEndClamped; j++) {
+        avgX += data[j].x;
+        avgY += data[j].y;
+      }
+      avgX /= count;
+      avgY /= count;
+
+      // Point in current bucket with largest triangle area
+      final rangeStart = (i * bucketSize).floor() + 1;
+      final rangeEnd = ((i + 1) * bucketSize).floor() + 1;
+      final rangeEndClamped = rangeEnd < data.length ? rangeEnd : data.length;
+
+      double maxArea = -1;
+      int maxAreaIndex = rangeStart;
+
+      for (int j = rangeStart; j < rangeEndClamped; j++) {
+        final area = ((data[a].x - avgX) * (data[j].y - data[a].y) -
+                    (data[a].x - data[j].x) * (avgY - data[a].y))
+                .abs() *
+            0.5;
+        if (area > maxArea) {
+          maxArea = area;
+          maxAreaIndex = j;
+        }
+      }
+
+      sampled.add(data[maxAreaIndex]);
+      a = maxAreaIndex;
+    }
+
+    sampled.add(data.last);
+    return sampled;
+  }
+
+  double? _parseTimeValue(dynamic value) {
+    if (value is num) {
+      return value.toDouble();
+    } else if (value is String) {
+      try {
+        DateTime? date;
+        try {
+          date = DateTime.parse(value);
+        } catch (_) {
+          date = DateFormat('yyyy-MM-dd HH:mm:ss').parse(value);
+        }
+        return date.millisecondsSinceEpoch.toDouble();
+      } catch (e) {
+        return double.tryParse(value);
+      }
+    }
+    return null;
   }
 
   @override
@@ -207,7 +270,7 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
     }
 
     if (widget.preProcessedData != null) {
-      _buildLineChart();
+      return _buildLineChart();
     }
 
     if (_data == null ||
@@ -252,7 +315,13 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
             'X Axis:',
             xColumn,
             _headers!,
-            (value) => setState(() => _selectedXColumn = value),
+            (value) {
+              setState(() {
+                _selectedXColumn = value;
+                widget.chartOptions['selectedXColumn'] = value;
+              });
+              _recomputeSpots();
+            },
           ),
         ),
         const SizedBox(width: 8),
@@ -261,7 +330,13 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
             'Y Axis:',
             yColumn,
             _headers!,
-            (value) => setState(() => _selectedYColumn = value),
+            (value) {
+              setState(() {
+                _selectedYColumn = value;
+                widget.chartOptions['selectedYColumn'] = value;
+              });
+              _recomputeSpots();
+            },
           ),
         ),
       ],
@@ -279,12 +354,11 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
       children: [
         Text(label, style: const TextStyle(fontSize: 13)),
         DropdownButton(
-          items:
-              items
-                  .map(
-                    (item) => DropdownMenuItem(value: item, child: Text(item)),
-                  )
-                  .toList(),
+          items: items
+              .map(
+                (item) => DropdownMenuItem(value: item, child: Text(item)),
+              )
+              .toList(),
           value: value,
           isExpanded: true,
           onChanged: (newValue) {
@@ -298,118 +372,31 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
   }
 
   Widget _buildLineChart() {
-    List<FlSpot> spots = [];
-
-    if (widget.preProcessedData != null) {
-      spots = _spots;
-    } else if (_data != null &&
-        _headers != null &&
-        _selectedXColumn != null &&
-        _selectedYColumn != null) {
-      final xIndex = _headers!.indexOf(_selectedXColumn!);
-      final yIndex = _headers!.indexOf(_selectedYColumn!);
-
-      if (xIndex < 0 || yIndex < 0) {
-        return Center(
-          child: Text(
-            'Invalid columns selected: $_selectedXColumn, $_selectedYColumn',
-          ),
-        );
-      }
-
-      // Modify the parsing logic to handle date/time values
-      for (var row in _data!) {
-        if (row.length <= xIndex || row.length <= yIndex) continue;
-        final xRaw = row[xIndex];
-        final yRaw = row[yIndex];
-
-        double? x = parseTimeValue(xRaw);
-        double? y = parseTimeValue(yRaw);
-        // double? x =
-        //     xRaw is num ? xRaw.toDouble() : double.tryParse(xRaw.toString());
-        // double? y =
-        //     yRaw is num ? yRaw.toDouble() : double.tryParse(yRaw.toString());
-
-        if (x != null && y != null) {
-          spots.add(FlSpot(x, y));
-        }
-      }
-      spots.sort((a, b) => a.x.compareTo(b.x));
-    }
-
-    if (spots.isEmpty) {
+    if (_cachedSpots.isEmpty) {
       return const Center(child: Text('No valid data to display in chart'));
     }
 
-    // Calculate min and max values for X and Y axes
-    final minX =
-        spots.isNotEmpty
-            ? spots.map((e) => e.x).reduce((a, b) => a < b ? a : b)
-            : 0;
-    final maxX =
-        spots.isNotEmpty
-            ? spots.map((e) => e.x).reduce((a, b) => a > b ? a : b)
-            : 0;
-    final minYData =
-        spots.isNotEmpty
-            ? spots.map((e) => e.y).reduce((a, b) => a < b ? a : b)
-            : 0;
-    final maxYData =
-        spots.isNotEmpty
-            ? spots.map((e) => e.y).reduce((a, b) => a > b ? a : b)
-            : 0;
-
-    // Add some padding to the min/max values (10% of the range for better visibility)
-    final xPadding = (maxX - minX) * 0.1;
-    final yPadding = (maxYData - minYData) * 0.1;
-
-    // Chart options (with defaults)
+    // Read visual options (these don't require recomputation)
     final lineColor = widget.chartOptions['lineColor'] ?? Colors.blue;
-    final lineWidth = widget.chartOptions['lineWidth'] ?? 3.0;
+    final lineWidth = (widget.chartOptions['lineWidth'] ?? 3.0).toDouble();
     final isCurved = widget.chartOptions['isCurved'] ?? true;
     final showDots = widget.chartOptions['showDots'] ?? true;
     final dotColor = widget.chartOptions['dotColor'] ?? Colors.blue;
-    final dotSize = widget.chartOptions['dotSize'] ?? 5.0;
+    final dotSize = (widget.chartOptions['dotSize'] ?? 5.0).toDouble();
     final showGrid = widget.chartOptions['gridLines'] ?? true;
     final showTooltip = widget.chartOptions['showTooltip'] ?? true;
     final backgroundColor =
         widget.chartOptions['backgroundColor'] ?? Colors.transparent;
-    // final autoScale = widget.chartOptions['autoScale'] ?? true;
 
-    // // Calculate Y-axis bounds based on autoScale setting
-    // double minY, maxY;
-    // if (autoScale || widget.chartOptions['minY'] == null) {
-    //   minY = minYData - yPadding;
-    // } else {
-    //   minY = widget.chartOptions['minY'];
-    // }
-
-    // if (autoScale || widget.chartOptions['maxY'] == null) {
-    //   maxY = maxYData + yPadding;
-    // } else {
-    //   maxY = widget.chartOptions['maxY'];
-    // }
-
-    // Calculate min/max Y if auto-scale is enabled
+    // Axis bounds — use auto-scale with cached bounds, or manual overrides
     final autoScale = widget.chartOptions['autoScale'] ?? true;
-    final minY = autoScale ? (minYData - yPadding) : widget.chartOptions['minY'];
-    final maxY = autoScale ? (maxYData + yPadding) : widget.chartOptions['maxY'];
-
-    // if (autoScale && spots.isNotEmpty) {
-    //   final minYData = spots.map((e) => e.y).reduce((a, b) => a < b ? a : b);
-    //   final maxYData = spots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
-    //   final padding = (maxYData - minYData) * 0.1;
-    //   widget.chartOptions['minY'] = minYData - padding;
-    //   widget.chartOptions['maxY'] = maxYData + padding;
-    // }
-
-    // X-axis bounds (always auto-scaled with padding)
-    final effectiveMinX = minX - xPadding;
-    final effectiveMaxX = maxX + xPadding;
+    final effectiveMinX = _cachedMinX;
+    final effectiveMaxX = _cachedMaxX;
+    final minY = autoScale ? _cachedMinY : (widget.chartOptions['minY'] ?? _cachedMinY);
+    final maxY = autoScale ? _cachedMaxY : (widget.chartOptions['maxY'] ?? _cachedMaxY);
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Create a ClipRect to ensure nothing renders outside the container bounds
         return ClipRect(
           child: Container(
             width: constraints.maxWidth,
@@ -427,25 +414,23 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
                   show: true,
                   border: Border.all(color: Colors.grey.shade300, width: 1),
                 ),
-                clipData:
-                    FlClipData.all(), // Important: Enable clipping on all sides
+                clipData: FlClipData.all(),
                 lineBarsData: [
                   LineChartBarData(
-                    spots: spots,
+                    spots: _cachedSpots,
                     isCurved: isCurved,
                     color: lineColor,
                     barWidth: lineWidth,
-                    isStrokeCapRound: true, // Round the ends of lines
-                    preventCurveOverShooting:
-                        true, // Prevent curve overshooting
+                    isStrokeCapRound: true,
+                    preventCurveOverShooting: true,
                     dotData: FlDotData(
                       show: showDots,
-                      getDotPainter:
-                          (spot, percent, bar, index) => FlDotCirclePainter(
-                            radius: dotSize,
-                            color: dotColor,
-                            strokeWidth: 0,
-                          ),
+                      getDotPainter: (spot, percent, bar, index) =>
+                          FlDotCirclePainter(
+                        radius: dotSize,
+                        color: dotColor,
+                        strokeWidth: 0,
+                      ),
                     ),
                     belowBarData: BarAreaData(show: false),
                   ),
@@ -460,29 +445,25 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
                       vertical: 8,
                     ),
                     tooltipHorizontalOffset: 0,
-
                     fitInsideHorizontally: true,
                     fitInsideVertically: true,
-                    // Update the tooltip to show formatted dates for both axes:
                     getTooltipItems: (touchedSpots) {
                       return touchedSpots.map((spot) {
-                        final xValue =
-                            _isDateColumn(_selectedXColumn!)
-                                ? DateFormat('yyyy-MM-dd HH:mm').format(
-                                  DateTime.fromMillisecondsSinceEpoch(
-                                    spot.x.toInt(),
-                                  ),
-                                )
-                                : spot.x.toStringAsFixed(2);
+                        final xValue = _isDateColumn(_selectedXColumn)
+                            ? DateFormat('yyyy-MM-dd HH:mm').format(
+                                DateTime.fromMillisecondsSinceEpoch(
+                                  spot.x.toInt(),
+                                ),
+                              )
+                            : spot.x.toStringAsFixed(2);
 
-                        final yValue =
-                            _isDateColumn(_selectedYColumn!)
-                                ? DateFormat('yyyy-MM-dd HH:mm').format(
-                                  DateTime.fromMillisecondsSinceEpoch(
-                                    spot.y.toInt(),
-                                  ),
-                                )
-                                : spot.y.toStringAsFixed(2);
+                        final yValue = _isDateColumn(_selectedYColumn)
+                            ? DateFormat('yyyy-MM-dd HH:mm').format(
+                                DateTime.fromMillisecondsSinceEpoch(
+                                  spot.y.toInt(),
+                                ),
+                              )
+                            : spot.y.toStringAsFixed(2);
 
                         return LineTooltipItem(
                           '($xValue,\n$yValue)',
@@ -502,10 +483,7 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
                         FlLine(
                           color: Colors.blue.withValues(alpha: 0.8),
                           strokeWidth: 2,
-                          dashArray: [
-                            5,
-                            5,
-                          ], // Optional: creates dashed vertical line
+                          dashArray: [5, 5],
                         ),
                         FlDotData(
                           getDotPainter: (spot, percent, barData, index) {
@@ -533,17 +511,14 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
     );
   }
 
-  // Helper method to build titles data
   FlTitlesData _buildTitlesData() {
     return FlTitlesData(
       bottomTitles: AxisTitles(
         sideTitles: SideTitles(
           showTitles: true,
           reservedSize: 60,
-          // interval: null, // Let FL Chart determine the interval
           getTitlesWidget: (value, meta) {
-            // Check if the column is a date column
-            if (_selectedXColumn != null && _isDateColumn(_selectedXColumn!)) {
+            if (_isDateColumn(_selectedXColumn)) {
               final date = DateTime.fromMillisecondsSinceEpoch(value.toInt());
               return SideTitleWidget(
                 meta: meta,
@@ -556,7 +531,6 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
                 ),
               );
             }
-            // For non-date columns, just show the number
             return SideTitleWidget(
               meta: meta,
               child: Text(
@@ -571,9 +545,8 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
         sideTitles: SideTitles(
           showTitles: true,
           reservedSize: 60,
-          // interval: null, // Let FL Chart determine the interval
           getTitlesWidget: (value, meta) {
-            if (_selectedYColumn != null && _isDateColumn(_selectedYColumn!)) {
+            if (_isDateColumn(_selectedYColumn)) {
               final date = DateTime.fromMillisecondsSinceEpoch(value.toInt());
               return SideTitleWidget(
                 meta: meta,
@@ -598,22 +571,22 @@ class _DynamicLineChartState extends State<DynamicLineChart> {
     );
   }
 
-  // Add helper method to check if a column contains dates
-  bool _isDateColumn(String columnName) {
-    if (_data == null || _data!.isEmpty) return false;
+  /// Check if a column contains date/time values by sampling first 3 rows.
+  bool _isDateColumn(String? columnName) {
+    if (columnName == null || _data == null || _data!.isEmpty) return false;
 
     final columnIndex = _headers!.indexOf(columnName);
     if (columnIndex < 0) return false;
 
-    // Check first few non-null values in the column
     int checkedValues = 0;
-    for (var row in _data!) {
+    final sampleSize = _data!.length < 3 ? _data!.length : 3;
+    for (int i = 0; i < sampleSize; i++) {
+      final row = _data![i];
       if (row.length > columnIndex && row[columnIndex] != null) {
         if (row[columnIndex] is String) {
           try {
             DateTime.parse(row[columnIndex].toString());
             checkedValues++;
-            if (checkedValues >= 3) return true; // If first 3 values are dates
           } catch (_) {
             return false;
           }

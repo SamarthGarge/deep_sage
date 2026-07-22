@@ -44,6 +44,20 @@ class _DataProcessingTabState extends State<DataProcessingTab> {
   }
 
   @override
+  void didUpdateWidget(DataProcessingTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.currentDatasetPath != oldWidget.currentDatasetPath) {
+      setState(() {
+        _fileId = null;
+        _errorMessage = null;
+        _successMessage = null;
+        _promptTemplateController.clear();
+        _responseTemplateController.clear();
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Column(

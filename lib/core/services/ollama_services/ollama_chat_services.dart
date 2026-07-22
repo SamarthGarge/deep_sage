@@ -45,64 +45,83 @@ class OllamaChatService {
   }
 
   Future<List<ChatSessionHive>> listSessions(String userId) async {
-    final uri = Uri.parse('$_baseUrl/api/chat/sessions?user_id=$userId');
-    final response = await http.get(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-    );
-    if (response.statusCode != 200) {
-      throw Exception('Failed to list sessions: ${response.body}');
-    }
-    final list = json.decode(response.body) as List;
-    final sessions =
-        list.map((e) {
-          return ChatSessionHive(
-            sessionId: e['session_id'],
-            userId: userId,
-            title: e['title'],
-            model: e['model'],
-            createdAt: DateTime.parse(e['created_at']),
-            updatedAt: DateTime.parse(e['updated_at']),
-          );
-        }).toList();
+    try {
+      final uri = Uri.parse('$_baseUrl/api/chat/sessions?user_id=$userId');
+      final response = await http.get(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+      );
+      if (response.statusCode != 200) {
+        throw Exception('Failed to list sessions: ${response.statusCode}');
+      }
+      final list = json.decode(response.body) as List;
+      final sessions =
+          list.map((e) {
+            return ChatSessionHive(
+              sessionId: e['session_id'],
+              userId: userId,
+              title: e['title'],
+              model: e['model'],
+              createdAt: DateTime.parse(e['created_at']),
+              updatedAt: DateTime.parse(e['updated_at']),
+            );
+          }).toList();
 
-    await _sessionBox.clear();
-    for (final s in sessions) {
-      await _sessionBox.put(s.sessionId, s);
+      await _sessionBox.clear();
+      for (final s in sessions) {
+        await _sessionBox.put(s.sessionId, s);
+      }
+      return sessions;
+    } catch (e) {
+      // Fallback to local Hive sessions
+      final localSessions = _sessionBox.values.where((s) => s.userId == userId).toList();
+      if (localSessions.isNotEmpty) {
+        return localSessions;
+      }
+      throw Exception('Failed to list sessions and no local cache available: $e');
     }
-    return sessions;
   }
 
   Future<List<ChatMessageHive>> getChatMessages(
     String sessionId,
     String userId,
   ) async {
-    final uri = Uri.parse(
-      '$_baseUrl/api/chat/sessions/$sessionId/messages?user_id=$userId',
-    );
-    final response = await http.get(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-    );
-    if (response.statusCode != 200) {
-      throw Exception('Failed to fetch messages: ${response.body}');
-    }
-    final list = json.decode(response.body) as List;
-    final messages =
-        list.map((e) {
-          return ChatMessageHive(
-            messageId: e['message_id'],
-            sessionId: sessionId,
-            role: e['role'],
-            content: e['content'],
-            createdAt: DateTime.parse(e['created_at']),
-          );
-        }).toList();
+    try {
+      final uri = Uri.parse(
+        '$_baseUrl/api/chat/sessions/$sessionId/messages?user_id=$userId',
+      );
+      final response = await http.get(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+      );
+      if (response.statusCode != 200) {
+        throw Exception('Failed to fetch messages: ${response.statusCode}');
+      }
+      final list = json.decode(response.body) as List;
+      final messages =
+          list.map((e) {
+            return ChatMessageHive(
+              messageId: e['message_id'],
+              sessionId: sessionId,
+              role: e['role'],
+              content: e['content'],
+              createdAt: DateTime.parse(e['created_at']),
+            );
+          }).toList();
 
-    for (final m in messages) {
-      await _messageBox.put(m.messageId, m);
+      for (final m in messages) {
+        await _messageBox.put(m.messageId, m);
+      }
+      return messages;
+    } catch (e) {
+      // Fallback to local Hive messages
+      final localMessages = _messageBox.values.where((m) => m.sessionId == sessionId).toList();
+      if (localMessages.isNotEmpty) {
+        localMessages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+        return localMessages;
+      }
+      throw Exception('Failed to fetch messages and no local cache available: $e');
     }
-    return messages;
   }
 
   Future<String> sendMessage(

@@ -1,24 +1,19 @@
-import 'dart:io';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:csv/csv.dart';
 import 'package:flutter/material.dart';
+
+import '../../../../core/services/caching_services/csv_data_cache.dart';
 
 class DynamicBarChart extends StatefulWidget {
   final String filePath;
   final Map<String, dynamic> chartOptions;
+  final List<Map<String, dynamic>>? preProcessedData;
 
   const DynamicBarChart({
     super.key,
     required this.filePath,
     required this.chartOptions,
+    this.preProcessedData,
   });
-
-  // For live update support (optional, like in DynamicLineChart)
-  void updateOptions(Map<String, dynamic> newOptions) {
-    if (_DynamicBarChartState._instance != null) {
-      _DynamicBarChartState._instance!._updateOptions(newOptions);
-    }
-  }
 
   @override
   State<DynamicBarChart> createState() => _DynamicBarChartState();
@@ -30,55 +25,63 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
   String? _selectedXColumn;
   String? _selectedYColumn;
   bool _isLoading = true;
-  static _DynamicBarChartState? _instance;
+
+  // Cached computed chart data — recomputed only when columns or data change
+  List<BarChartGroupData> _cachedBarGroups = [];
+  double _cachedMaxY = 0;
+  bool _isDataTruncated = false;
+
+  /// Maximum number of bars to render for performance.
+  static const int _maxBars = 100;
 
   @override
   void initState() {
     super.initState();
-    _instance = this;
     _loadCsvData();
   }
 
   @override
-  void dispose() {
-    if (_instance == this) {
-      _instance = null;
-    }
-    super.dispose();
-  }
+  void didUpdateWidget(covariant DynamicBarChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
 
-  void _updateOptions(Map<String, dynamic> newOptions) {
-    if (mounted) {
-      setState(() {
-        widget.chartOptions.addAll(newOptions);
-      });
+    // If dataset changed, reload
+    if (oldWidget.filePath != widget.filePath) {
+      _loadCsvData();
+      return;
     }
+
+    // If column selections changed in options, recompute bar groups
+    final oldX = oldWidget.chartOptions['selectedXColumn'];
+    final oldY = oldWidget.chartOptions['selectedYColumn'];
+    final newX = widget.chartOptions['selectedXColumn'];
+    final newY = widget.chartOptions['selectedYColumn'];
+    if (oldX != newX || oldY != newY) {
+      _selectedXColumn = newX ?? _selectedXColumn;
+      _selectedYColumn = newY ?? _selectedYColumn;
+      _recomputeBarGroups();
+      return;
+    }
+
+    // Visual-only option changes — rebuild bar groups since colors/widths are baked in
+    _recomputeBarGroups();
   }
 
   Future<void> _loadCsvData() async {
     try {
-      final file = File(widget.filePath);
-      if (!await file.exists()) {
-        throw Exception("CSV File does not exist: ${widget.filePath}");
-      }
-      final content = await file.readAsString();
-      final csvTable = const CsvToListConverter(
-        fieldDelimiter: ',',
-        eol: '\n',
-        shouldParseNumbers: true,
-      ).convert(content);
-
-      if (csvTable.isEmpty) throw Exception("CSV File has no data");
+      final csvData = await CsvDataCache().getCsvData(widget.filePath);
 
       if (!mounted) return;
 
       setState(() {
-        _headers = csvTable[0].map((e) => e.toString()).toList();
-        _data = csvTable.length > 1 ? csvTable.sublist(1) : [];
+        _headers = csvData.headers;
+        _data = csvData.rows;
         _selectedXColumn = widget.chartOptions['selectedXColumn'] ?? _headers!.first;
-        _selectedYColumn = widget.chartOptions['selectedYColumn'] ?? _findNumericColumn();
+        _selectedYColumn = widget.chartOptions['selectedYColumn'] ??
+            CsvDataCache.findNumericColumn(_headers!, _data!);
         _isLoading = false;
       });
+
+      _recomputeBarGroups();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -89,32 +92,90 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
     }
   }
 
-  String? _findNumericColumn() {
-    if (_headers == null ||
-        _headers!.isEmpty ||
-        _data == null ||
-        _data!.isEmpty) {
-      return null;
+  /// Recompute the BarChartGroupData list from raw data.
+  /// Called only when columns, data, or visual options change.
+  void _recomputeBarGroups() {
+    if (_data == null ||
+        _headers == null ||
+        _selectedXColumn == null ||
+        _selectedYColumn == null) {
+      return;
     }
-    for (var header in _headers!) {
-      final headerIndex = _headers!.indexOf(header);
-      for (var row in _data!) {
-        if (row.length > headerIndex) {
-          final value = row[headerIndex];
-          if (value is num ||
-              (value != null && double.tryParse(value.toString()) != null)) {
-            return header;
-          }
+
+    final xIndex = _headers!.indexOf(_selectedXColumn!);
+    final yIndex = _headers!.indexOf(_selectedYColumn!);
+
+    if (xIndex < 0 || yIndex < 0) {
+      setState(() {
+        _cachedBarGroups = [];
+        _isDataTruncated = false;
+      });
+      return;
+    }
+
+    final barGroups = <BarChartGroupData>[];
+    int barCount = 0;
+    bool truncated = false;
+
+    for (int i = 0; i < _data!.length; i++) {
+      final row = _data![i];
+      if (row.length <= xIndex || row.length <= yIndex) continue;
+      final yRaw = row[yIndex];
+
+      double? y = yRaw is num ? yRaw.toDouble() : double.tryParse(yRaw.toString());
+      if (y != null) {
+        if (barCount >= _maxBars) {
+          truncated = true;
+          break;
         }
+        barGroups.add(
+          BarChartGroupData(
+            x: i,
+            barRods: [
+              BarChartRodData(
+                toY: y,
+                color: widget.chartOptions['barColor'] ?? Colors.blue,
+                width: (widget.chartOptions['barWidth'] ?? 16.0).toDouble(),
+                borderRadius: BorderRadius.circular(
+                    (widget.chartOptions['borderRadius'] ?? 4.0).toDouble()),
+                borderSide: (widget.chartOptions['showBorder'] ?? false)
+                    ? BorderSide(
+                        color: widget.chartOptions['borderColor'] ?? Colors.black,
+                        width: (widget.chartOptions['borderWidth'] ?? 1.0).toDouble(),
+                      )
+                    : BorderSide.none,
+                backDrawRodData: BackgroundBarChartRodData(show: false),
+              ),
+            ],
+          ),
+        );
+        barCount++;
       }
     }
-    return _headers!.first;
+
+    // Compute max Y for axis bounds
+    double maxY = 0;
+    for (final g in barGroups) {
+      final y = g.barRods.first.toY;
+      if (y > maxY) maxY = y;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _cachedBarGroups = barGroups;
+      _cachedMaxY = maxY * 1.1;
+      _isDataTruncated = truncated;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
+    }
+
+    if (widget.preProcessedData != null) {
+      return _buildBarChart();
     }
 
     if (_data == null ||
@@ -142,6 +203,20 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _buildColumnSelectors(),
+        if (_isDataTruncated)
+          Padding(
+            padding: const EdgeInsets.only(top: 8.0),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, size: 14, color: Colors.orange.shade700),
+                const SizedBox(width: 4),
+                Text(
+                  'Showing first $_maxBars bars of ${_data!.length} data points',
+                  style: TextStyle(fontSize: 12, color: Colors.orange.shade700),
+                ),
+              ],
+            ),
+          ),
         const SizedBox(height: 16),
         Expanded(child: _buildBarChart()),
       ],
@@ -164,6 +239,7 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
                 _selectedXColumn = value;
                 widget.chartOptions['selectedXColumn'] = value;
               });
+              _recomputeBarGroups();
             },
           ),
         ),
@@ -178,6 +254,7 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
                 _selectedYColumn = value;
                 widget.chartOptions['selectedYColumn'] = value;
               });
+              _recomputeBarGroups();
             },
           ),
         ),
@@ -214,65 +291,12 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
   }
 
   Widget _buildBarChart() {
-    List<BarChartGroupData> barGroups = [];
-
-
-
-    if (_data != null &&
-        _headers != null &&
-        _selectedXColumn != null &&
-        _selectedYColumn != null) {
-      final xIndex = _headers!.indexOf(_selectedXColumn!);
-      final yIndex = _headers!.indexOf(_selectedYColumn!);
-
-      if (xIndex < 0 || yIndex < 0) {
-        return Center(
-          child: Text(
-            'Invalid columns selected: $_selectedXColumn, $_selectedYColumn',
-          ),
-        );
-      }
-
-      for (int i = 0; i < _data!.length; i++) {
-        final row = _data![i];
-        if (row.length <= xIndex || row.length <= yIndex) continue;
-        final xRaw = row[xIndex];
-        final yRaw = row[yIndex];
-
-        double? y = yRaw is num ? yRaw.toDouble() : double.tryParse(yRaw.toString());
-        if (y != null) {
-          barGroups.add(
-            BarChartGroupData(
-              x: i,
-              barRods: [
-                BarChartRodData(
-                  toY: y,
-                  color: widget.chartOptions['barColor'] ?? Colors.blue,
-                  width: (widget.chartOptions['barWidth'] ?? 16.0).toDouble(),
-                  borderRadius: BorderRadius.circular(
-                      (widget.chartOptions['borderRadius'] ?? 4.0).toDouble()),
-                  borderSide: (widget.chartOptions['showBorder'] ?? false)
-                      ? BorderSide(
-                          color: widget.chartOptions['borderColor'] ?? Colors.black,
-                          width: (widget.chartOptions['borderWidth'] ?? 1.0).toDouble(),
-                        )
-                      : BorderSide.none,
-                  backDrawRodData: BackgroundBarChartRodData(show: false),
-                ),
-              ],
-            ),
-          );
-        }
-      }
-    }
-
-    if (barGroups.isEmpty) {
+    if (_cachedBarGroups.isEmpty) {
       return const Center(child: Text('No valid data to display in chart'));
     }
 
-    // Axis bounds
-    final minY = widget.chartOptions['minY'] ?? 0.0;
-    final maxY = widget.chartOptions['maxY'] ?? (barGroups.map((g) => g.barRods.first.toY).reduce((a, b) => a > b ? a : b) * 1.1);
+    final minY = (widget.chartOptions['minY'] ?? 0.0).toDouble();
+    final maxY = (widget.chartOptions['maxY'] ?? _cachedMaxY).toDouble();
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -283,7 +307,7 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
             color: widget.chartOptions['backgroundColor'] ?? Colors.transparent,
             child: BarChart(
               BarChartData(
-                barGroups: barGroups,
+                barGroups: _cachedBarGroups,
                 groupsSpace: (widget.chartOptions['groupsSpace'] ?? 16.0).toDouble(),
                 alignment: BarChartAlignment.values[
                     (widget.chartOptions['alignment'] ?? 0).clamp(0, 2)],
@@ -304,7 +328,8 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
                           final xVal = _data![value.toInt()][xIndex];
                           return SideTitleWidget(
                             meta: meta,
-                            child: Text(xVal.toString(), style: const TextStyle(fontSize: 10)),
+                            child: Text(xVal.toString(),
+                                style: const TextStyle(fontSize: 10)),
                           );
                         }
                         return const SizedBox.shrink();
@@ -317,7 +342,8 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
                       getTitlesWidget: (value, meta) {
                         return SideTitleWidget(
                           meta: meta,
-                          child: Text(value.toStringAsFixed(1), style: const TextStyle(fontSize: 10)),
+                          child: Text(value.toStringAsFixed(1),
+                              style: const TextStyle(fontSize: 10)),
                         );
                       },
                     ),
@@ -339,9 +365,10 @@ class _DynamicBarChartState extends State<DynamicBarChart> {
                       );
                     },
                   ),
-                  allowTouchBarBackDraw: widget.chartOptions['allowBackgroundBarTouch'] ?? true,
+                  allowTouchBarBackDraw:
+                      widget.chartOptions['allowBackgroundBarTouch'] ?? true,
                 ),
-                baselineY: widget.chartOptions['baselineY'] ?? 0.0,
+                baselineY: (widget.chartOptions['baselineY'] ?? 0.0).toDouble(),
               ),
             ),
           ),

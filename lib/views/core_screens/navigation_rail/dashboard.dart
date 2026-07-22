@@ -129,13 +129,23 @@ class _DashboardState extends State<Dashboard> {
   ///
   Future<void> _scanDirectory(
     String directoryPath,
-    List<DatasetFile> files,
-  ) async {
+    List<DatasetFile> files, [
+    int depth = 0,
+  ]) async {
+    if (depth > 3) return; // Limit depth to prevent infinite loops
+
     final dir = Directory(directoryPath);
     if (!await dir.exists()) return;
 
     try {
-      await for (var entity in dir.list()) {
+      await for (var entity in dir.list().handleError((e) {})) {
+        final basename = path.basename(entity.path);
+        if (basename.startsWith('.') ||
+            entity.path.contains('Application Data') ||
+            entity.path.contains('AppData')) {
+          continue;
+        }
+
         if (entity is File) {
           final extension = path.extension(entity.path).toLowerCase();
           if (['.json', '.csv', '.txt'].contains(extension)) {
@@ -155,11 +165,11 @@ class _DashboardState extends State<Dashboard> {
             );
           }
         } else if (entity is Directory) {
-          await _scanDirectory(entity.path, files);
+          await _scanDirectory(entity.path, files, depth + 1);
         }
       }
     } catch (ex) {
-      debugPrint('Unable to scan directories: $ex');
+      // Ignored: OS Access Denied or Path Not Found exceptions on system folders
     }
   }
 

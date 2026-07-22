@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
@@ -17,11 +19,17 @@ class LineChartControlPanel extends StatefulWidget {
 
 class _LineChartControlPanelState extends State<LineChartControlPanel> {
   late Map<String, dynamic> options;
+  Timer? _debounceTimer;
+
+  // Managed text controllers to avoid creating them in build()
+  final TextEditingController _minYController = TextEditingController();
+  final TextEditingController _maxYController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     options = Map<String, dynamic>.from(widget.currentOptions);
+    _syncTextControllers();
   }
 
   @override
@@ -31,13 +39,32 @@ class _LineChartControlPanelState extends State<LineChartControlPanel> {
       setState(() {
         options = Map<String, dynamic>.from(widget.currentOptions);
       });
+      _syncTextControllers();
     }
+  }
+
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    _minYController.dispose();
+    _maxYController.dispose();
+    super.dispose();
+  }
+
+  void _syncTextControllers() {
+    _minYController.text = options['minY'] != null ? options['minY'].toString() : '';
+    _maxYController.text = options['maxY'] != null ? options['maxY'].toString() : '';
   }
 
   void _updateOption(String key, dynamic value) {
     setState(() {
       options[key] = value;
-      widget.onOptionsChanged(options);
+    });
+
+    // Debounce the callback to parent to avoid excessive rebuilds
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 100), () {
+      widget.onOptionsChanged(Map<String, dynamic>.from(options));
     });
   }
 
@@ -118,15 +145,15 @@ class _LineChartControlPanelState extends State<LineChartControlPanel> {
                     ),
                   ]),
                   _buildControlSection('Axis Bounds', [
-                    _buildMinMaxControl('Min Y', 'minY', options['minY'], options['autoScale'] ?? true),
-                    _buildMinMaxControl('Max Y', 'maxY', options['maxY'], options['autoScale'] ?? true),
+                    _buildMinMaxControl('Min Y', 'minY', _minYController, options['autoScale'] ?? true),
+                    _buildMinMaxControl('Max Y', 'maxY', _maxYController, options['autoScale'] ?? true),
                     _buildSwitchControl(
                       'Auto Scale',
                       'autoScale',
                       options['autoScale'] ?? true,
                     ),
                     const SizedBox(height: 8),
-                    Text(
+                    const Text(
                       'Note: Auto Scale will add padding to ensure all data points are visible',
                     ),
                   ]),
@@ -243,10 +270,7 @@ class _LineChartControlPanelState extends State<LineChartControlPanel> {
     );
   }
 
-  Widget _buildMinMaxControl(String label, String optionKey, dynamic value, bool autoScale) {
-    final controller = TextEditingController(
-      text: value != null ? value.toString() : '',
-    );
+  Widget _buildMinMaxControl(String label, String optionKey, TextEditingController controller, bool autoScale) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
@@ -256,7 +280,7 @@ class _LineChartControlPanelState extends State<LineChartControlPanel> {
             child: TextField(
               controller: controller,
               enabled: !autoScale,
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: const InputDecoration(
                 hintText: 'auto',
                 isDense: true,

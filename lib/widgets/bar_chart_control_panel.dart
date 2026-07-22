@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
@@ -17,11 +19,18 @@ class BarChartControlPanel extends StatefulWidget {
 
 class _BarChartControlPanelState extends State<BarChartControlPanel> {
   late Map<String, dynamic> options;
+  Timer? _debounceTimer;
+
+  // Managed text controllers to avoid creating them in build()
+  final TextEditingController _minYController = TextEditingController();
+  final TextEditingController _maxYController = TextEditingController();
+  final TextEditingController _baselineYController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     options = Map<String, dynamic>.from(widget.currentOptions);
+    _syncTextControllers();
   }
 
   @override
@@ -31,13 +40,34 @@ class _BarChartControlPanelState extends State<BarChartControlPanel> {
       setState(() {
         options = Map<String, dynamic>.from(widget.currentOptions);
       });
+      _syncTextControllers();
     }
+  }
+
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    _minYController.dispose();
+    _maxYController.dispose();
+    _baselineYController.dispose();
+    super.dispose();
+  }
+
+  void _syncTextControllers() {
+    _minYController.text = options['minY'] != null ? options['minY'].toString() : '';
+    _maxYController.text = options['maxY'] != null ? options['maxY'].toString() : '';
+    _baselineYController.text = options['baselineY'] != null ? options['baselineY'].toString() : '';
   }
 
   void _updateOption(String key, dynamic value) {
     setState(() {
       options[key] = value;
-      widget.onOptionsChanged(options);
+    });
+
+    // Debounce the callback to parent to avoid excessive rebuilds
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 100), () {
+      widget.onOptionsChanged(Map<String, dynamic>.from(options));
     });
   }
 
@@ -132,9 +162,9 @@ class _BarChartControlPanelState extends State<BarChartControlPanel> {
                     ),
                   ]),
                   _buildControlSection('Axes', [
-                    _buildMinMaxControl('Min Y', 'minY', options['minY']),
-                    _buildMinMaxControl('Max Y', 'maxY', options['maxY']),
-                    _buildMinMaxControl('Baseline Y', 'baselineY', options['baselineY']),
+                    _buildMinMaxControl('Min Y', 'minY', _minYController),
+                    _buildMinMaxControl('Max Y', 'maxY', _maxYController),
+                    _buildMinMaxControl('Baseline Y', 'baselineY', _baselineYController),
                   ]),
                   _buildControlSection('Visual', [
                     _buildColorPickerControl(
@@ -312,10 +342,7 @@ class _BarChartControlPanelState extends State<BarChartControlPanel> {
     );
   }
 
-  Widget _buildMinMaxControl(String label, String optionKey, dynamic value) {
-    final controller = TextEditingController(
-      text: value != null ? value.toString() : '',
-    );
+  Widget _buildMinMaxControl(String label, String optionKey, TextEditingController controller) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
@@ -324,7 +351,7 @@ class _BarChartControlPanelState extends State<BarChartControlPanel> {
           Expanded(
             child: TextField(
               controller: controller,
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: const InputDecoration(
                 hintText: 'auto',
                 isDense: true,

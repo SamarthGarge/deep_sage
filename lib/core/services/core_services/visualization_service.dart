@@ -168,4 +168,150 @@ class VisualizationService {
         return 'none';
     }
   }
+
+  Future<String> generateLineChart(
+    File csvFile,
+    Map<String, dynamic> options,
+  ) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/visualization/generate_line_chart'),
+      );
+
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'csv_file',
+          csvFile.path,
+          filename: path.basename(csvFile.path),
+        ),
+      );
+
+      final apiConfig = {
+        'x_column': options['xColumn'],
+        'y_column': options['yColumn'],
+        'title': options['title'] ?? 'Line Chart',
+        'x_label': options['xLabel'] ?? options['xColumn'],
+        'y_label': options['yLabel'] ?? options['yColumn'],
+        'line_color': options['lineColor'] ?? '#1f77b4',
+        'line_width': options['lineWidth'] ?? 2.0,
+        'line_style': options['lineStyle'] ?? 'solid',
+        'show_markers': options['showMarkers'] ?? false,
+        'marker_size': options['markerSize'] ?? 5,
+        'marker_color': options['markerColor'] ?? '#1f77b4',
+        'marker_style': options['markerStyle'] ?? 'o',
+        'show_grid': options['showGrid'] ?? true,
+        'grid_alpha': options['gridAlpha'] ?? 0.3,
+        'show_legend': options['showLegend'] ?? false,
+        'legend_position': options['legendPosition'] ?? 'best',
+        'legend_label': options['legendLabel'] ?? options['yColumn'],
+        'fig_width': options['figWidth'] ?? 10,
+        'fig_height': options['figHeight'] ?? 6,
+        'title_fontsize': options['titleFontSize'] ?? 14,
+        'label_fontsize': options['labelFontSize'] ?? 12,
+        'format': (options['outputFormat'] ?? 'png').toString().toLowerCase(),
+        'dpi': options['outputDpi'] ?? 100,
+        'transparent': options['transparentBackground'] ?? false,
+      };
+
+      request.fields['config'] = jsonEncode(apiConfig);
+
+      debugPrint(
+        'Sending line chart request with config: ${jsonEncode(apiConfig)}',
+      );
+
+      final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
+
+      debugPrint('Line chart response status: ${response.statusCode}');
+      debugPrint('Line chart response body: $responseBody');
+
+      final jsonResponse = jsonDecode(responseBody);
+
+      if (response.statusCode == 200) {
+        return '$baseUrl${jsonResponse['generated_line_chart']}';
+      } else {
+        throw Exception(
+          'Failed to generate line chart: ${jsonResponse['error']}',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error generating line chart: $e');
+      throw Exception('Error generating line chart: $e');
+    }
+  }
+
+  Future<String> generateBarChart(
+    File csvFile,
+    Map<String, dynamic> options,
+  ) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/visualization/generate_bar_chart'),
+      );
+
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'csv_file',
+          csvFile.path,
+          filename: path.basename(csvFile.path),
+        ),
+      );
+
+      final apiConfig = {
+        'x_column': options['xColumn'],
+        'y_column': options['yColumn'],
+        'title': options['title'] ?? 'Bar Chart',
+        'x_label': options['xLabel'] ?? options['xColumn'],
+        'y_label': options['yLabel'] ?? options['yColumn'],
+        'bar_color': options['barColor'] ?? '#1f77b4',
+        'bar_width': options['barWidth'] ?? 0.7,
+        'edge_color': options['edgeColor'] ?? 'none',
+        'edge_width': options['edgeWidth'] ?? 0.5,
+        'bar_alpha': options['barAlpha'] ?? 1.0,
+        'orientation': options['orientation'] ?? 'vertical',
+        'aggregation': options['aggregation'] ?? 'sum',
+        'max_bars': options['maxBars'] ?? 50,
+        'show_values': options['showValues'] ?? false,
+        'show_grid': options['showGrid'] ?? true,
+        'grid_alpha': options['gridAlpha'] ?? 0.3,
+        'show_legend': options['showLegend'] ?? false,
+        'legend_position': options['legendPosition'] ?? 'best',
+        'legend_label': options['legendLabel'] ?? options['yColumn'],
+        'fig_width': options['figWidth'] ?? 10,
+        'fig_height': options['figHeight'] ?? 6,
+        'title_fontsize': options['titleFontSize'] ?? 14,
+        'label_fontsize': options['labelFontSize'] ?? 12,
+        'format': (options['outputFormat'] ?? 'png').toString().toLowerCase(),
+        'dpi': options['outputDpi'] ?? 100,
+        'transparent': options['transparentBackground'] ?? false,
+      };
+
+      request.fields['config'] = jsonEncode(apiConfig);
+
+      debugPrint(
+        'Sending bar chart request with config: ${jsonEncode(apiConfig)}',
+      );
+
+      final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
+
+      debugPrint('Bar chart response status: ${response.statusCode}');
+      debugPrint('Bar chart response body: $responseBody');
+
+      final jsonResponse = jsonDecode(responseBody);
+
+      if (response.statusCode == 200) {
+        return '$baseUrl${jsonResponse['generated_bar_chart']}';
+      } else {
+        throw Exception(
+          'Failed to generate bar chart: ${jsonResponse['error']}',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error generating bar chart: $e');
+      throw Exception('Error generating bar chart: $e');
+    }
+  }
 }

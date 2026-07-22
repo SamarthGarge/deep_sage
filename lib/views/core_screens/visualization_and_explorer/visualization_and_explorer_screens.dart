@@ -71,7 +71,7 @@ class _VisualizationAndExplorerScreensState
     _loadLastSelectedDataset();
 
     setupImportWatchers();
-    recentImportsBox.listenable().addListener(setupImportWatchers);
+    recentImportsBox.listenable().addListener(_onHiveBoxChanged);
     selectedDatasetNotifier.addListener(_handleDatasetSelectionChange);
   }
 
@@ -231,6 +231,27 @@ class _VisualizationAndExplorerScreensState
     Future.microtask(() => selectedDatasetNotifier.value = import.fileName);
   }
 
+  /// [_onHiveBoxChanged] responds to any changes in the recentImportsBox,
+  /// such as importing a new dataset from the recent folders screen.
+  /// It synchronizes the UI state with the current data in Hive.
+  void _onHiveBoxChanged() {
+    setupImportWatchers();
+    _loadRecentImports();
+
+    final newDatasetName = recentImportsBox.get('currentDatasetName');
+    final newDatasetPath = recentImportsBox.get('currentDatasetPath');
+    final newDatasetType = recentImportsBox.get('currentDatasetType');
+
+    if (newDatasetName != currentDataset || newDatasetPath != currentDatasetPath) {
+      setState(() {
+        currentDataset = newDatasetName;
+        currentDatasetPath = newDatasetPath;
+        currentDatasetType = newDatasetType;
+        selectedDatasetNotifier.value = currentDataset;
+      });
+    }
+  }
+
   /// [setupImportWatchers] configures file watchers for each recent import.
   ///
   /// This method iterates through the list of recent imports stored in [recentImportsBox] and sets up
@@ -327,7 +348,7 @@ class _VisualizationAndExplorerScreensState
       watcher.cancel();
     }
     tabController.dispose();
-    recentImportsBox.listenable().removeListener(setupImportWatchers);
+    recentImportsBox.listenable().removeListener(_onHiveBoxChanged);
     selectedDatasetNotifier.dispose();
     super.dispose();
   }

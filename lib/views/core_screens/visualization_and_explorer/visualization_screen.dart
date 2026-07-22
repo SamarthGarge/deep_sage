@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:deep_sage/core/services/caching_services/chart_rendering_service.dart';
 import 'package:deep_sage/views/core_screens/visualization_and_explorer/pie_chart_visualization/dynamic_pie_chart.dart';
 import 'package:deep_sage/widgets/overlay_widgets/matplotlib_option_overlays/pie_chart_matplotlib_option_overlay.dart';
+import 'package:deep_sage/widgets/overlay_widgets/matplotlib_option_overlays/line_chart_matplotlib_option_overlay.dart';
+import 'package:deep_sage/widgets/overlay_widgets/matplotlib_option_overlays/bar_chart_matplotlib_option_overlay.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -250,6 +252,7 @@ class _VisualizationScreenState extends State<VisualizationScreen>
       chartStateBox.put('chartType', _currentChartType);
       chartStateBox.put('chartOptions', serializableOptions);
       chartStateBox.put('datasetPath', currentDatasetPath);
+      chartStateBox.put('chartLibrary', _selectedChartLibrary);
     }
   }
 
@@ -292,184 +295,228 @@ class _VisualizationScreenState extends State<VisualizationScreen>
 
   // Code logic for line chart
   void _showLineChart(Map<String, dynamic> options) {
-    bool isNewChartRequest =
-        _currentChartType != 'line' || _currentChart == null;
-
     if ((currentDatasetPath == null || currentDatasetPath!.isEmpty) &&
-        isNewChartRequest) {
+        (_currentChartType != 'line' || _currentChart == null)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please import a dataset first')),
       );
       return;
     }
 
-    final preRenderedChart = _chartRenderingService.getPreRenderedChart(
-      options,
-    );
+    final bool isNewChart = _currentChartType != 'line' || _currentChart == null;
 
-    if (preRenderedChart != null) {
+    if (_selectedChartLibrary == 'Matplotlib') {
+      // Matplotlib path: send to backend API
       setState(() {
-        _currentChart = preRenderedChart;
+        _currentChart = const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Generating Matplotlib chart...'),
+            ],
+          ),
+        );
         _currentChartOptions = options;
         _currentChartType = 'line';
       });
-      _saveChartState();
-      return;
-    }
 
-    bool isJustOptionsUpdate =
-        _currentChartType == 'line' || !isNewChartRequest;
+      final file = File(currentDatasetPath!);
+      _visualizationService
+          .generateLineChart(file, options)
+          .then((imagePath) {
+            setState(() {
+              _currentChart = Image.network(
+                imagePath,
+                fit: BoxFit.contain,
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) return child;
+                  return Center(
+                    child: CircularProgressIndicator(
+                      value: loadingProgress.expectedTotalBytes != null
+                          ? loadingProgress.cumulativeBytesLoaded /
+                              loadingProgress.expectedTotalBytes!
+                          : null,
+                    ),
+                  );
+                },
+                errorBuilder: (context, error, stackTrace) {
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error, size: 50),
+                        const SizedBox(height: 16),
+                        Text('Error loading chart: $error'),
+                      ],
+                    ),
+                  );
+                },
+              );
+            });
 
-    setState(() {
-      _isGeneratingChart = true;
-      _currentChart = const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Generating chart...'),
-          ],
-        ),
-      );
-    });
+            _saveChartState();
 
-    final file = File(currentDatasetPath!);
-    file.exists().then((exists) {
-      if (!exists) {
-        setState(() {
-          _isGeneratingChart = false;
-          _currentChart = const Center(
-            child: Text('Dataset file not found. Please import a new dataset.'),
-          );
-        });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Dataset file not found')));
-        return;
-      }
+            if (isNewChart) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Chart generated successfully')),
+              );
+            }
+          })
+          .catchError((error) {
+            setState(() {
+              _currentChart = Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error_outline, size: 50, color: Colors.red),
+                    const SizedBox(height: 16),
+                    Text('Failed to generate chart: ${error.toString()}'),
+                  ],
+                ),
+              );
+            });
 
-      // Only FL Chart for now, add Matplotlib if needed
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error: ${error.toString()}')),
+            );
+          });
+    } else {
+      // FL Chart path
       setState(() {
         _currentChart = DynamicLineChart(
           filePath: currentDatasetPath!,
           chartOptions: options,
-          key: ValueKey(currentDatasetPath),
         );
         _currentChartOptions = options;
         _currentChartType = 'line';
-        _isGeneratingChart = false;
       });
 
-      _saveLineChartState();
+      _saveChartState();
 
-      if (!isJustOptionsUpdate) {
+      if (isNewChart) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Chart generated successfully')),
         );
       }
-    });
-  }
-
-  void _saveLineChartState() {
-    if (_currentChartType != null && _currentChartOptions != null) {
-      final serializableOptions = Map<String, dynamic>.from(
-        _currentChartOptions!,
-      );
-
-      serializableOptions.forEach((key, value) {
-        if (value is Color) {
-          serializableOptions[key] = value.value;
-        }
-      });
-
-      final chartStateBox = Hive.box(dotenv.env['CHART_STATE_BOX']!);
-      chartStateBox.put('chartType', _currentChartType);
-      chartStateBox.put('chartOptions', serializableOptions);
-      chartStateBox.put('datasetPath', currentDatasetPath);
     }
   }
 
-  void _restoreLineChartState() {
-    final chartStateBox = Hive.box(dotenv.env['CHART_STATE_BOX']!);
-    final savedChartType = chartStateBox.get('chartType');
-    final savedOptions = chartStateBox.get('chartOptions');
-    final savedDatasetPath = chartStateBox.get('datasetPath');
 
-    if (savedChartType == 'pie' &&
-        savedOptions != null &&
-        savedDatasetPath != null &&
-        savedDatasetPath == currentDatasetPath) {
-      final restoredOptions = Map<String, dynamic>.from(savedOptions);
-
-      final colorKeys = [
-        'centerSpaceColor',
-        'sectionColor',
-        'sectionBorderColor',
-        'titleColor',
-        'tooltipBgColor',
-      ];
-
-      for (var key in colorKeys) {
-        if (restoredOptions.containsKey(key) && restoredOptions[key] is int) {
-          restoredOptions[key] = Color(restoredOptions[key]);
-        }
-      }
-
-      setState(() {
-        _currentChart = DynamicPieChart(
-          filePath: currentDatasetPath!,
-          chartOptions: restoredOptions,
-        );
-        _currentChartOptions = restoredOptions;
-        _currentChartType = savedChartType;
-      });
-    } else if (savedChartType == 'line' &&
-        savedOptions != null &&
-        savedDatasetPath != null &&
-        savedDatasetPath == currentDatasetPath) {
-      final restoredOptions = Map<String, dynamic>.from(savedOptions);
-
-      final colorKeys = ['lineColor', 'dotColor', 'backgroundColor'];
-
-      for (var key in colorKeys) {
-        if (restoredOptions.containsKey(key) && restoredOptions[key] is int) {
-          restoredOptions[key] = Color(restoredOptions[key]);
-        }
-      }
-
-      setState(() {
-        _currentChart = DynamicLineChart(
-          filePath: currentDatasetPath!,
-          chartOptions: restoredOptions,
-        );
-        _currentChartOptions = restoredOptions;
-        _currentChartType = savedChartType;
-      });
-    }
-  }
 
   // Code logic for bar chart
   void _showBarChart(Map<String, dynamic> options) {
-    bool isNewChartRequest =
-        _currentChartType != 'bar' || _currentChart == null;
-
     if ((currentDatasetPath == null || currentDatasetPath!.isEmpty) &&
-        isNewChartRequest) {
+        (_currentChartType != 'bar' || _currentChart == null)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please import a dataset first')),
       );
       return;
     }
-    setState(() {
-      _currentChart = DynamicBarChart(
-        filePath: currentDatasetPath!,
-        chartOptions: options,
-        key: ValueKey(currentDatasetPath),
-      );
-      _currentChartOptions = options;
-      _currentChartType = 'bar';
-    });
+
+    final bool isNewChart = _currentChartType != 'bar' || _currentChart == null;
+
+    if (_selectedChartLibrary == 'Matplotlib') {
+      // Matplotlib path: send to backend API
+      setState(() {
+        _currentChart = const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Generating Matplotlib chart...'),
+            ],
+          ),
+        );
+        _currentChartOptions = options;
+        _currentChartType = 'bar';
+      });
+
+      final file = File(currentDatasetPath!);
+      _visualizationService
+          .generateBarChart(file, options)
+          .then((imagePath) {
+            setState(() {
+              _currentChart = Image.network(
+                imagePath,
+                fit: BoxFit.contain,
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) return child;
+                  return Center(
+                    child: CircularProgressIndicator(
+                      value: loadingProgress.expectedTotalBytes != null
+                          ? loadingProgress.cumulativeBytesLoaded /
+                              loadingProgress.expectedTotalBytes!
+                          : null,
+                    ),
+                  );
+                },
+                errorBuilder: (context, error, stackTrace) {
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error, size: 50),
+                        const SizedBox(height: 16),
+                        Text('Error loading chart: $error'),
+                      ],
+                    ),
+                  );
+                },
+              );
+            });
+
+            _saveChartState();
+
+            if (isNewChart) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Chart generated successfully')),
+              );
+            }
+          })
+          .catchError((error) {
+            setState(() {
+              _currentChart = Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error_outline, size: 50, color: Colors.red),
+                    const SizedBox(height: 16),
+                    Text('Failed to generate chart: ${error.toString()}'),
+                  ],
+                ),
+              );
+            });
+
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error: ${error.toString()}')),
+            );
+          });
+    } else {
+      // FL Chart path
+      setState(() {
+        _currentChart = DynamicBarChart(
+          filePath: currentDatasetPath!,
+          chartOptions: options,
+        );
+        _currentChartOptions = options;
+        _currentChartType = 'bar';
+      });
+
+      _saveChartState();
+
+      if (isNewChart) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Chart generated successfully')),
+        );
+      }
+    }
   }
 
   @override
@@ -589,15 +636,25 @@ class _VisualizationScreenState extends State<VisualizationScreen>
                                         top: Radius.circular(16),
                                       ),
                                     ),
-                                    child: LineChartOptionsOverlay(
-                                      // Added the function of line chart
-                                      initialOptions: _lineChartOptions ?? {},
-                                      onOptionsChanged: (options) {
-                                        setState(() {
-                                          _lineChartOptions = options;
-                                        });
-                                      },
-                                    ),
+                                    child: _selectedChartLibrary == 'Matplotlib'
+                                      ? LineChartMatplotlibOptionsOverlay(
+                                          datasetPath: currentDatasetPath,
+                                          initialOptions: _lineChartOptions,
+                                          onOptionsChanged: (options) {
+                                            setState(() {
+                                              _lineChartOptions = options;
+                                            });
+                                          },
+                                        )
+                                      : LineChartOptionsOverlay(
+                                          // Added the function of line chart
+                                          initialOptions: _lineChartOptions ?? {},
+                                          onOptionsChanged: (options) {
+                                            setState(() {
+                                              _lineChartOptions = options;
+                                            });
+                                          },
+                                        ),
                                   ),
                             ),
                         // showing the result of line chart
@@ -636,14 +693,24 @@ class _VisualizationScreenState extends State<VisualizationScreen>
                                         top: Radius.circular(16),
                                       ),
                                     ),
-                                    child: BarChartOptionsOverlay(
-                                      initialOptions: _barChartOptions ?? {},
-                                      onOptionsChanged: (options) {
-                                        setState(() {
-                                          _barChartOptions = options;
-                                        });
-                                      },
-                                    ),
+                                    child: _selectedChartLibrary == 'Matplotlib'
+                                      ? BarChartMatplotlibOptionsOverlay(
+                                          datasetPath: currentDatasetPath,
+                                          initialOptions: _barChartOptions,
+                                          onOptionsChanged: (options) {
+                                            setState(() {
+                                              _barChartOptions = options;
+                                            });
+                                          },
+                                        )
+                                      : BarChartOptionsOverlay(
+                                          initialOptions: _barChartOptions ?? {},
+                                          onOptionsChanged: (options) {
+                                            setState(() {
+                                              _barChartOptions = options;
+                                            });
+                                          },
+                                        ),
                                   ),
                             ),
                       ).then((result) {
@@ -693,6 +760,7 @@ class _VisualizationScreenState extends State<VisualizationScreen>
                                               },
                                             )
                                             : PieChartMatplotlibOptionsOverlay(
+                                              datasetPath: currentDatasetPath,
                                               initialOptions:
                                                   _currentChartOptions,
                                               onOptionsChanged: (options) {
@@ -745,7 +813,38 @@ class _VisualizationScreenState extends State<VisualizationScreen>
                         ),
                         child: Builder(
                           builder: (_) {
-                            if (_currentChartType == 'pie' &&
+                            if (_selectedChartLibrary == 'Matplotlib' &&
+                                _currentChartOptions != null) {
+                              // Matplotlib charts don't use FL Chart control panels
+                              return Padding(
+                                padding: const EdgeInsets.all(16.0),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.auto_graph,
+                                      size: 48,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'Matplotlib Chart',
+                                      style: theme.textTheme.titleMedium?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Click the chart type button above to reconfigure and regenerate the chart.',
+                                      textAlign: TextAlign.center,
+                                      style: theme.textTheme.bodyMedium?.copyWith(
+                                        color: subTextColor,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            } else if (_currentChartType == 'pie' &&
                                 _currentChartOptions != null) {
                               return PieChartControlPanel(
                                 currentOptions: _currentChartOptions!,
@@ -761,30 +860,15 @@ class _VisualizationScreenState extends State<VisualizationScreen>
                               return LineChartControlPanel(
                                 currentOptions: _currentChartOptions!,
                                 onOptionsChanged: (updatedOptions) {
-                                  setState(() {
-                                    _currentChartOptions = updatedOptions;
-                                    if (_currentChart is DynamicLineChart) {
-                                      // update the chart with new options
-                                      (_currentChart as DynamicLineChart)
-                                          .updateOptions(updatedOptions);
-                                    }
-                                  });
-                                  // _showLineChart(updatedOptions);
+                                  _showLineChart(updatedOptions);
                                 },
                               );
-                              // Here we can also add the code for bar chart
                             } else if (_currentChartType == 'bar' &&
                                 _currentChartOptions != null) {
                               return BarChartControlPanel(
                                 currentOptions: _currentChartOptions!,
                                 onOptionsChanged: (updatedOptions) {
-                                  setState(() {
-                                    _currentChartOptions = updatedOptions;
-                                    if (_currentChart is DynamicBarChart) {
-                                      (_currentChart as DynamicBarChart)
-                                          .updateOptions(updatedOptions);
-                                    }
-                                  });
+                                  _showBarChart(updatedOptions);
                                 },
                               );
                             }

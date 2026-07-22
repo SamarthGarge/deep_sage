@@ -40,6 +40,8 @@ Future main() async {
   await Hive.openBox('starred_datasets');
   await Hive.openBox('user_preferences');
   await Hive.openBox(dotenv.env['CHART_STATE_BOX'] ?? 'chart_state');
+  await Hive.openBox<ChatSessionHive>('chat_sessions');
+  await Hive.openBox<ChatMessageHive>('chat_messages');
   // await CacheService().initCacheBox();
 
   final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';

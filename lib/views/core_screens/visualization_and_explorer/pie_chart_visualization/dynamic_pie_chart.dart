@@ -51,7 +51,7 @@ class _DynamicPieChartState extends State<DynamicPieChart> {
 
       _sectionData = {};
       for (var section in widget.preProcessedData!) {
-        final category = section['category'] as String;
+        final category = (section['label'] ?? section['category']) as String;
         final value = section['value'] as double;
         _sectionData![category] = value;
       }
@@ -153,7 +153,7 @@ class _DynamicPieChartState extends State<DynamicPieChart> {
     }
 
     if (widget.preProcessedData != null) {
-      return Expanded(child: _buildPieChart());
+      return _buildPieChart();
     }
 
     if (_data == null ||

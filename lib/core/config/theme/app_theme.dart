@@ -8,7 +8,7 @@ class AppTheme {
     scaffoldBackgroundColor: Colors.white,
     brightness: Brightness.light,
     cardColor: Colors.grey[100],
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       color: Colors.grey[100],
       elevation: 0.5,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.0)),
@@ -106,7 +106,7 @@ class AppTheme {
     scaffoldBackgroundColor: Colors.grey[900],
     brightness: Brightness.dark,
     cardColor: Color(0xFF2A2D37),
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       color: Color(0xFF2A2D37),
       elevation: 0.5,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.0)),

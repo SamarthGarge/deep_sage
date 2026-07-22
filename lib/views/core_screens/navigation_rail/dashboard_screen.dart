@@ -882,7 +882,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       FolderScreen(onNavigate: navigateToIndex),
       VisualizationAndExplorerScreens(),
       VisualizationScreen(),
-      MachineLearningScreen(),
+      // MachineLearningScreen(),
       SettingsScreen(),
     ];
     return ShortcutService(
@@ -1044,20 +1044,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   label: Text('Visualization'),
                 ),
-                NavigationRailDestination(
-                  icon: getIconForTheme(
-                    darkIcon: AppIcons.machineLearningOutlinedLight,
-                    lightIcon: AppIcons.machineLearningOutlinedDark,
-                    size: 18,
-                  ),
-                  padding: EdgeInsets.symmetric(vertical: 4),
-                  selectedIcon: getIconForTheme(
-                    darkIcon: AppIcons.machineLearningLight,
-                    lightIcon: AppIcons.machineLearningDark,
-                    size: 18,
-                  ),
-                  label: Text('Machine Learning'),
-                ),
+                // NavigationRailDestination(
+                //   icon: getIconForTheme(
+                //     darkIcon: AppIcons.machineLearningOutlinedLight,
+                //     lightIcon: AppIcons.machineLearningOutlinedDark,
+                //     size: 18,
+                //   ),
+                //   padding: EdgeInsets.symmetric(vertical: 4),
+                //   selectedIcon: getIconForTheme(
+                //     darkIcon: AppIcons.machineLearningLight,
+                //     lightIcon: AppIcons.machineLearningDark,
+                //     size: 18,
+                //   ),
+                //   label: Text('Machine Learning'),
+                // ),
                 NavigationRailDestination(
                   icon: getIconForTheme(
                     lightIcon: AppIcons.settingsOutlinedLight,

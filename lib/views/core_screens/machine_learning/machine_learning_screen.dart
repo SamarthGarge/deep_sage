@@ -493,7 +493,7 @@ class _MachineLearningScreenState extends State<MachineLearningScreen>
     super.initState();
     _messageFocusNode = FocusNode();
     _initHiveBoxes().then((_) {
-      _chatService = OllamaChatService();
+      // _chatService = OllamaChatService();
       _tabController = TabController(length: 3, vsync: this);
 
       fetchOllamaModels();
@@ -521,19 +521,23 @@ class _MachineLearningScreenState extends State<MachineLearningScreen>
   }
 
   Future<void> _loadSessions() async {
-    final hiveSessions = await _chatService.listSessions(_userId);
-    setState(() {
-      _sessions.clear();
-      _sessions.addAll(
-        hiveSessions.map(
-          (s) => ChatSession(id: s.sessionId, nickname: s.title),
-        ),
-      );
-      if (_sessions.isNotEmpty) {
-        _selectedSession = _sessions.first;
-        _loadMessages(_selectedSession!);
-      }
-    });
+    try {
+      final hiveSessions = await _chatService.listSessions(_userId);
+      setState(() {
+        _sessions.clear();
+        _sessions.addAll(
+          hiveSessions.map(
+            (s) => ChatSession(id: s.sessionId, nickname: s.title),
+          ),
+        );
+        if (_sessions.isNotEmpty) {
+          _selectedSession = _sessions.first;
+          _loadMessages(_selectedSession!);
+        }
+      });
+    } catch (e) {
+      debugPrint('Failed to load chat sessions (backend may be offline): $e');
+    }
   }
 
   Future<void> _loadMessages(ChatSession session) async {

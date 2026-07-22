@@ -197,25 +197,36 @@ class _FolderAllState extends State<FolderAll> {
   /// This function performs deep file traversal
   Future<void> _scanDirectory(
     String directoryPath,
-    List<DatasetFile> files,
-  ) async {
+    List<DatasetFile> files, {
+    int depth = 0,
+  }) async {
+    // Limit recursion depth to avoid scanning system/protected directories too deep
+    // 5 was too deep for Windows C:\Users\* drives, hitting temp appdata files
+    if (depth > 2) return;
+
     final dir = Directory(directoryPath);
     if (!await dir.exists()) return;
-
-    if (!watchedDirectories.contains(directoryPath)) {
-      setupFileWatcher(directoryPath);
-      watchedDirectories.add(directoryPath);
+    
+    // Skip hidden folders and specific known problematic system paths to prevent crashes
+    final basename = path.basename(directoryPath);
+    if (basename.startsWith('.') || directoryPath.contains('AppData')) {
+      return;
     }
 
+    // NOTE: setupFileWatcher is NOT called here — the root directory watcher
+    // already uses recursive:true, so calling it per-subdirectory would create
+    // thousands of duplicate OS watchers, exhausting system handles.
+
     try {
-      await for (var entity in dir.list()) {
+      await for (var entity in dir.list(followLinks: false).handleError((e) {
+        // Silently ignore access denied errors for system folders
+      })) {
         if (entity is File) {
           final extension = path.extension(entity.path).toLowerCase();
           if (['.json', '.csv', '.txt'].contains(extension)) {
             final fileStats = await entity.stat();
             final fileSize = await _getFileSize(entity.path, fileStats.size);
             final isStarred = await _loadStarredStatus(entity.path);
-            debugPrint('Is the file starred: $isStarred');
 
             files.add(
               DatasetFile(
@@ -229,13 +240,14 @@ class _FolderAllState extends State<FolderAll> {
             );
           }
         } else if (entity is Directory) {
-          await _scanDirectory(entity.path, files);
+          await _scanDirectory(entity.path, files, depth: depth + 1);
         }
       }
     } catch (ex) {
-      debugPrint('Unable to scan directories: $ex');
+      debugPrint('Unable to scan directory "$directoryPath": $ex');
     }
   }
+
 
   /// Returns a human-readable file size string for the given [bytes].
   ///
@@ -271,21 +283,35 @@ class _FolderAllState extends State<FolderAll> {
   /// - Scans for dataset files.
   /// - Prints a debug message indicating the event and its type.
   /// The previous watcher is cancelled if it exist
+  Timer? _watcherDebounceTimer;
+
   void setupDirectoryWatcher(String dirPath) {
     directoryWatcher?.cancel();
 
     if (dirPath.isEmpty) return;
 
     try {
-      directoryWatcher = Directory(dirPath).watch(recursive: true).listen((
-        event,
-      ) {
-        Future.delayed(const Duration(milliseconds: 500), () {
+      directoryWatcher = Directory(dirPath)
+          .watch(recursive: false)
+          .handleError((e) {
+        // Silently ignore access denied errors for watchers
+      }).listen((event) {
+        final ext = path.extension(event.path).toLowerCase();
+        // Ignore temporary and log files that change constantly in user dirs
+        if (ext == '.tmp' || ext == '.log' || event.path.contains('AppData')) {
+          return;
+        }
+
+        if (_watcherDebounceTimer?.isActive ?? false) {
+          _watcherDebounceTimer!.cancel();
+        }
+
+        _watcherDebounceTimer = Timer(const Duration(seconds: 2), () {
           if (mounted) {
             getDirectoryFileCounts(dirPath);
             scanForDatasetFiles(dirPath);
             debugPrint(
-              'Something happened in the root: ${event.path} - ${event.type}',
+              'Directory changed, rescanned: ${event.path} - ${event.type}',
             );
           }
         });
@@ -315,7 +341,9 @@ class _FolderAllState extends State<FolderAll> {
     try {
       final subscription = Directory(
         directoryPath,
-      ).watch(recursive: true).listen((event) {
+      ).watch(recursive: false).handleError((e) {
+        // Silently ignore access denied errors for watchers
+      }).listen((event) {
         Future.delayed(const Duration(milliseconds: 500), () {
           if (mounted) {
             final filePath = event.path;
@@ -324,7 +352,7 @@ class _FolderAllState extends State<FolderAll> {
             if (['.json', '.csv', '.txt'].contains(extension)) {
               scanForDatasetFiles(selectedRootDirectoryPath);
               debugPrint(
-                'Something happened to your file niga: ${event.path} - ${event.type}',
+                'File event detected: ${event.path} - ${event.type}',
               );
             } else if (event.type == FileSystemEvent.create &&
                 Directory(event.path).existsSync()) {
@@ -394,21 +422,37 @@ class _FolderAllState extends State<FolderAll> {
     int totalRootFiles = 0;
 
     try {
-      List<FileSystemEntity> entities = await rootDir.list().toList();
+      List<FileSystemEntity> entities = [];
+      List<Directory> directories = [];
 
-      for (var entity in entities) {
+      // Use listen with handleError so that access denied errors on individual
+      // system folders don't abort the entire directory scan stream.
+      await for (var entity in rootDir.list(recursive: false).handleError((e) {
+        // Silently ignore access denied errors for system folders like Application Data
+      })) {
+        final basename = path.basename(entity.path);
+        // Skip hidden folders and specific known problematic system paths
+        if (basename.startsWith('.') || entity.path.contains('Application Data') || entity.path.contains('AppData')) {
+          continue;
+        }
+
+        entities.add(entity);
         if (entity is File) {
           totalRootFiles++;
+        } else if (entity is Directory) {
+          directories.add(entity);
         }
       }
-
-      List<Directory> directories = entities.whereType<Directory>().toList();
 
       for (var directory in directories) {
         String folderName = path.basename(directory.path);
         int fileCount = 0;
 
-        await for (var entity in directory.list()) {
+        await for (var entity in directory.list(recursive: false).handleError((e) {})) {
+          final basename = path.basename(entity.path);
+          if (basename.startsWith('.') || entity.path.contains('Application Data') || entity.path.contains('AppData')) {
+            continue;
+          }
           if (entity is File) {
             fileCount++;
           }
@@ -421,18 +465,16 @@ class _FolderAllState extends State<FolderAll> {
         folderList = result;
         folders.clear();
         folders.addAll(result);
-      });
-
-      setState(() {
         anyFilesPresent = folders.isNotEmpty || totalRootFiles > 0;
       });
 
-      debugPrint('Root directory contains $totalRootFiles files');
-      for (var folder in result) {
-        debugPrint('${folder['name']}: ${folder['files']}');
-      }
     } catch (e) {
-      throw Exception('Error scanning directories: $e');
+      debugPrint('Error scanning directories: $e');
+      setState(() {
+        folderList = [];
+        folders.clear();
+        anyFilesPresent = false;
+      });
     }
   }
 
